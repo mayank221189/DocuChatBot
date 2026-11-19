@@ -11,4 +11,8 @@ wheels/
 
 # Local credentials
 .env
+
+# Uploaded documents
+/documents/
+
 .ruff_cache/
