@@ -1,30 +1,27 @@
-import os
-from pathlib import Path
+from io import BytesIO
 from typing import cast
 
 import streamlit as st
-from dotenv import load_dotenv
 from langchain_core.documents import Document
 from langchain_core.vectorstores import InMemoryVectorStore
-from langchain_google_genai import (
-    ChatGoogleGenerativeAI,
-    GoogleGenerativeAIEmbeddings,
-)
+from langchain_ollama import ChatOllama, OllamaEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pydantic import SecretStr
 from pypdf import PdfReader
 
+OLLAMA_BASE_URL = "http://localhost:11434"
+CHAT_MODEL = "llama3.2:3b"
+EMBEDDING_MODEL = "nomic-embed-text"
 
-def load_pdf_documents(pdf_path: Path) -> list[Document]:
-    reader = PdfReader(pdf_path)
+
+def load_pdf_documents(pdf_content: bytes, source_name: str) -> list[Document]:
+    reader = PdfReader(BytesIO(pdf_content))
     total_pages = len(reader.pages)
-    source = str(pdf_path)
 
     return [
         Document(
             page_content=(page.extract_text() or "").strip(),
             metadata={
-                "source": source,
+                "source": source_name,
                 "total_pages": total_pages,
                 "page": page_number,
                 "page_label": reader.page_labels[page_number],
@@ -35,19 +32,19 @@ def load_pdf_documents(pdf_path: Path) -> list[Document]:
 
 
 def build_vector_store(
-    pdf_path: Path,
-    api_key: str | None,
+    pdf_content: bytes,
+    source_name: str,
 ) -> InMemoryVectorStore:
-    documents = load_pdf_documents(pdf_path)
+    documents = load_pdf_documents(pdf_content, source_name)
     splitter = RecursiveCharacterTextSplitter(
         chunk_size=1000,
         chunk_overlap=200,
         length_function=len,
     )
     chunks = splitter.split_documents(documents)
-    embeddings = GoogleGenerativeAIEmbeddings(
-        model="gemini-embedding-2-preview",
-        api_key=SecretStr(api_key) if api_key is not None else None,
+    embeddings = OllamaEmbeddings(
+        model=EMBEDDING_MODEL,
+        base_url=OLLAMA_BASE_URL,
     )
     return InMemoryVectorStore.from_documents(
         documents=chunks,
@@ -55,23 +52,10 @@ def build_vector_store(
     )
 
 
-def save_uploaded_document(filename: str, content: bytes) -> Path:
-    documents_dir = Path(__file__).parent / "documents"
-    documents_dir.mkdir(parents=True, exist_ok=True)
-
-    uploaded_path = documents_dir / Path(filename).name
-    for existing_file in documents_dir.iterdir():
-        if existing_file.is_file():
-            existing_file.unlink()
-
-    uploaded_path.write_bytes(content)
-    return uploaded_path
-
-
 def answer_question(
     query: str,
     vector_store: InMemoryVectorStore,
-    chat_model: ChatGoogleGenerativeAI,
+    chat_model: ChatOllama,
 ) -> str:
     documents = vector_store.similarity_search(query, k=2)
     context = "\n\n".join(document.page_content for document in documents)
@@ -86,17 +70,15 @@ def answer_question(
 
 def on_document_upload_change() -> None:
     st.session_state.document_uploaded = False
-    st.session_state.pop("uploaded_file_path", None)
     st.session_state.pop("vector_store", None)
     st.session_state.messages = []
 
 
 def main() -> None:
-    load_dotenv()
-    api_key = os.getenv("GOOGLE_GEMINI_API_KEY")
-    chat_model = ChatGoogleGenerativeAI(
-        model="gemini-4-hydrogen",
-        api_key=SecretStr(api_key) if api_key is not None else None,
+    chat_model = ChatOllama(
+        model=CHAT_MODEL,
+        base_url=OLLAMA_BASE_URL,
+        temperature=0,
     )
 
     st.title("Document Chatbot")
@@ -116,13 +98,11 @@ def main() -> None:
 
     if uploaded_file is not None and not st.session_state.document_uploaded:
         with st.spinner("Adding document..."):
-            uploaded_path = save_uploaded_document(
-                uploaded_file.name,
+            vector_store = build_vector_store(
                 uploaded_file.getvalue(),
+                uploaded_file.name,
             )
-            vector_store = build_vector_store(uploaded_path, api_key)
 
-        st.session_state.uploaded_file_path = str(uploaded_path)
         st.session_state.vector_store = vector_store
         st.session_state.document_uploaded = True
         st.success(f"{uploaded_file.name} uploaded and indexed successfully.")

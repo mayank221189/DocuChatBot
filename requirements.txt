@@ -1,7 +1,6 @@
 langchain
-langchain-google-genai
+langchain-ollama
 langchain-text-splitters
-dotenv
 pypdf
 streamlit
 watchdog
